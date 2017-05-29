@@ -1,8 +1,19 @@
-import httplib
+import http.client
 import re
 import csv
 import math
 import datetime
+import smtplib
+import mimetypes
+from email.mime.multipart import MIMEMultipart
+from email import encoders
+from email.message import Message
+from email.mime.audio import MIMEAudio
+from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from subprocess import Popen, PIPE
 import xml.dom.minidom
 import xml.etree.ElementTree as ET
 
@@ -10,12 +21,12 @@ import xml.etree.ElementTree as ET
 ARGOS_HOST = "ws-argos.cls.fr"
 
 def argosRequest(request):
-    conn = httplib.HTTPConnection(ARGOS_HOST)
+    conn = http.client.HTTPConnection(ARGOS_HOST)
     conn.request("POST", "/argosDws/services/DixService", request)
     response = conn.getresponse()
     #print response.status, response.reason, response.msg
     data = response.read()
-    print data
+    print(data)
     conn.close()
     return data
 
@@ -200,10 +211,11 @@ def calcul_speed(latitude1,longitude1, date1, latitude2, longitude2, date2):
     return distance,temps,vitesse
 
 
-def convertCSV_for_DTSI():    
-    with open('/media/sfiat/data2/workspace_python/where_argos/examples/ArgosData_2016_09_23-25.csv', 'rb') as f:        
-        fieldnames = ['N\xc2\xb0 ID','Date de loc.','Latitude (degr\xc3\xa9 d\xc3\xa9cimal)','Longitude  (degr\xc3\xa9 d\xc3\xa9cimal)','Chronologie']        
-        writer = csv.DictWriter(open('/media/sfiat/data2/workspace_python/where_argos/examples/argos_where_"+datetime.datetime.today().strftime('%Y-%m-%d')+".csv', 'w'), fieldnames=fieldnames,delimiter=';')
+def convertCSV_for_DTSI(file):    
+    with open(file, 'r', encoding="utf8") as f:        
+        fieldnames = ['N° ID','Date de loc.','Latitude (degré décimal)','Longitude  (degré décimal)','Chronologie'] 
+        filename= "argos_where_"+datetime.datetime.today().strftime('%Y-%m-%d')+".csv"
+        writer = csv.DictWriter(open("./exemples/"+filename, 'w'), fieldnames=fieldnames,delimiter=';')
         writer.writeheader()
 
         reader = csv.DictReader(f,delimiter=';')
@@ -221,16 +233,82 @@ def convertCSV_for_DTSI():
                 else:
                     distance,temps,vitesse=calcul_speed(latitude1,longitude1, date1, row[fieldnames[3]], row[fieldnames[2]], row[fieldnames[1]])
                 if(vitesse<12):
-                    writer.writerow({fieldnames[0]: row[fieldnames[0]], fieldnames[1]: row[fieldnames[1]], fieldnames[2]: row[fieldnames[2]], fieldnames[3]: row[fieldnames[3]],fieldnames[7]: n})
+                    writer.writerow({fieldnames[0]: row[fieldnames[0]], fieldnames[1]: row[fieldnames[1]], fieldnames[2]: row[fieldnames[2]], fieldnames[3]: row[fieldnames[3]],fieldnames[4]: n})
                     nid1=row[fieldnames[0]]
                     latitude1=row[fieldnames[3]]
                     longitude1=row[fieldnames[2]]
                     date1=row[fieldnames[1]]
                     n = n+1
-    return ""
+    return "./exemples/"+filename
+
+def sendcsv_mail_with_google(expediteur,destinataire,file,username,password):
+    emailfrom = expediteur
+    emailto = destinataire
+    fileToSend = file
+    username = "user"
+    password = "password"
+
+    msg = MIMEMultipart()
+    msg["From"] = emailfrom
+    msg["To"] = emailto
+    msg["Subject"] = "New argos data"
+    msg.preamble = "Please find attached new argos data for WHERE project"
+
+    ctype, encoding = mimetypes.guess_type(fileToSend)
+    if ctype is None or encoding is not None:
+        ctype = "application/octet-stream"
+
+    maintype, subtype = ctype.split("/", 1)
+
+    if maintype == "text":
+        fp = open(fileToSend)
+        # Note: we should handle calculating the charset
+        attachment = MIMEText(fp.read(), _subtype=subtype)
+        fp.close()
+    elif maintype == "image":
+        fp = open(fileToSend, "rb")
+        attachment = MIMEImage(fp.read(), _subtype=subtype)
+        fp.close()
+    elif maintype == "audio":
+        fp = open(fileToSend, "rb")
+        attachment = MIMEAudio(fp.read(), _subtype=subtype)
+        fp.close()
+    else:
+        fp = open(fileToSend, "rb")
+        attachment = MIMEBase(maintype, subtype)
+        attachment.set_payload(fp.read())
+        fp.close()
+        encoders.encode_base64(attachment)
+    attachment.add_header("Content-Disposition", "attachment", filename=fileToSend)
+    msg.attach(attachment)
+
+    server = smtplib.SMTP("smtp.gmail.com:587")
+    server.starttls()
+    server.login(username,password)
+    server.sendmail(emailfrom, emailto, msg.as_string())
+    server.quit()
+
+def sendcsv_mail_with_sendmail(expediteur,destinataire,fileToSend):
+    html = MIMEText("<html><head><title>New argos data</title></head><body>Please find attached new argos data for WHERE project</body>", "html")
+    msg = MIMEMultipart("alternative")
+    
+
+    msg["From"] = expediteur
+    msg["To"] = destinataire
+    msg["Subject"] = "New argos data"
+    msg.add_header('Content-Disposition', 'attachment', filename=('utf8', '', fileToSend))
+
+    msg.attach(html)
+
+    p = Popen(["/usr/sbin/sendmail", "-t"], stdin=PIPE)
+    p.communicate(msg.as_bytes())
 
 
 if __name__ == '__main__':
-    argos_csv=getCsv('GARRIGUE','BOSSE_2016',IDPROGRAM,'program',10, 20, "true", "false")
-    convertCSV_for_DTSI();
+    #argos_csv=getCsv('GARRIGUE','BOSSE_2016',IDPROGRAM,'program',10, 20, "true", "false")
+    argos_csv='./exemples/ArgosData_2016_09_23-25.csv'
+    file = convertCSV_for_DTSI(argos_csv)
+    #sendcsv_mail_with_google("devtest.ird@gmail.com","sylvie.fiat@ird.fr",file,"devtest.ird@gmail.com","DEV2016test")
+    sendcsv_mail_with_sendmail("sylvie.fiat@ird.fr","sylvie.fiat@ird.fr",file)
+
     
